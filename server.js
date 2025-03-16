@@ -17,7 +17,6 @@ const rooms = new Map();
 io.on('connection', (socket) => {
   console.log('New client connected');
 
-  // Create a new game room
   socket.on('createRoom', () => {
     const roomId = uuidv4();
     const board = Array(50).fill().map(() => Array(50).fill(null));
@@ -27,12 +26,12 @@ io.on('connection', (socket) => {
       playerX: socket.id,
       playerO: null,
       lastMove: null,
+      gameStarted: false,
     });
     socket.join(roomId);
     socket.emit('roomCreated', { roomId });
   });
 
-  // Join an existing room
   socket.on('joinRoom', (roomId) => {
     const room = rooms.get(roomId);
     if (!room) {
@@ -44,16 +43,19 @@ io.on('connection', (socket) => {
       return;
     }
     room.playerO = socket.id;
+    room.gameStarted = true;
     socket.join(roomId);
     io.to(roomId).emit('gameStart', { board: room.board, turn: room.turn });
     socket.emit('roomJoined', { roomId, player: 'O' });
     io.to(room.playerX).emit('roomJoined', { roomId, player: 'X' });
   });
 
-  // Handle a player's move
   socket.on('move', ({ roomId, x, y }) => {
     const room = rooms.get(roomId);
-    if (!room) return;
+    if (!room || !room.gameStarted) {
+      socket.emit('error', 'Game has not started yet');
+      return;
+    }
     if (room.turn === 'X' && socket.id !== room.playerX) return;
     if (room.turn === 'O' && socket.id !== room.playerO) return;
     if (room.board[x][y]) return;
@@ -70,16 +72,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle resignation
   socket.on('resign', (roomId) => {
     const room = rooms.get(roomId);
-    if (!room) return;
+    if (!room || !room.gameStarted) return;
     const winner = socket.id === room.playerX ? 'O' : 'X';
     io.to(roomId).emit('gameOver', { winner, reason: 'resignation' });
     rooms.delete(roomId);
   });
 
-  // Handle disconnection
   socket.on('disconnect', () => {
     for (const [roomId, room] of rooms) {
       if (room.playerX === socket.id || room.playerO === socket.id) {
@@ -91,14 +91,10 @@ io.on('connection', (socket) => {
   });
 });
 
-// Check for five in a row
 function calculateWinner(board, lastX, lastY, lastMark) {
   const size = 50;
   const directions = [
-    [0, 1],  // Horizontal
-    [1, 0],  // Vertical
-    [1, 1],  // Diagonal down-right
-    [1, -1], // Diagonal down-left
+    [0, 1], [1, 0], [1, 1], [1, -1]
   ];
 
   for (const [dx, dy] of directions) {
