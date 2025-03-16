@@ -7,12 +7,12 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "*", // Adjust for production
+    origin: "*", // Replace with frontend URL in production
   }
 });
 
 const port = process.env.PORT || 3001;
-const rooms = new Map(); // { board, turn, playerX, playerO }
+const rooms = new Map();
 
 io.on('connection', (socket) => {
   console.log('New client connected');
@@ -20,12 +20,13 @@ io.on('connection', (socket) => {
   // Create a new game room
   socket.on('createRoom', () => {
     const roomId = uuidv4();
-    const board = Array(50).fill().map(() => Array(50).fill(null)); // 50x50 grid
+    const board = Array(50).fill().map(() => Array(50).fill(null));
     rooms.set(roomId, {
       board,
       turn: 'X',
       playerX: socket.id,
       playerO: null,
+      lastMove: null,
     });
     socket.join(roomId);
     socket.emit('roomCreated', { roomId });
@@ -55,17 +56,27 @@ io.on('connection', (socket) => {
     if (!room) return;
     if (room.turn === 'X' && socket.id !== room.playerX) return;
     if (room.turn === 'O' && socket.id !== room.playerO) return;
-    if (room.board[x][y]) return; // Cell taken
+    if (room.board[x][y]) return;
 
     room.board[x][y] = room.turn;
+    room.lastMove = { x, y };
     room.turn = room.turn === 'X' ? 'O' : 'X';
-    io.to(roomId).emit('boardUpdate', { board: room.board, turn: room.turn });
+    io.to(roomId).emit('boardUpdate', { board: room.board, turn: room.turn, lastMove: room.lastMove });
 
-    const winner = calculateWinner(room.board, x, y, room.board[x][y]);
+    const winner = calculateWinner(room.board, room.lastMove.x, room.lastMove.y, room.board[x][y]);
     if (winner) {
-      io.to(roomId).emit('gameOver', { winner });
+      io.to(roomId).emit('gameOver', { winner: winner === 'draw' ? 'draw' : room.board[x][y], reason: winner === 'draw' ? 'draw' : 'five-in-a-row' });
       rooms.delete(roomId);
     }
+  });
+
+  // Handle resignation
+  socket.on('resign', (roomId) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const winner = socket.id === room.playerX ? 'O' : 'X';
+    io.to(roomId).emit('gameOver', { winner, reason: 'resignation' });
+    rooms.delete(roomId);
   });
 
   // Handle disconnection
@@ -91,25 +102,23 @@ function calculateWinner(board, lastX, lastY, lastMark) {
   ];
 
   for (const [dx, dy] of directions) {
-    let count = 1; // Count the last placed mark
-    // Check forward
+    let count = 1;
     for (let i = 1; i < 5; i++) {
       const newX = lastX + i * dx;
       const newY = lastY + i * dy;
       if (newX < 0 || newX >= size || newY < 0 || newY >= size || board[newX][newY] !== lastMark) break;
       count++;
     }
-    // Check backward
     for (let i = 1; i < 5; i++) {
       const newX = lastX - i * dx;
       const newY = lastY - i * dy;
       if (newX < 0 || newX >= size || newY < 0 || newY >= size || board[newX][newY] !== lastMark) break;
       count++;
     }
-    if (count >= 5) return lastMark; // Winner found
+    if (count >= 5) return lastMark;
   }
-  if (board.flat().every(cell => cell)) return 'draw'; // Board full
-  return null; // Game continues
+  if (board.flat().every(cell => cell)) return 'draw';
+  return null;
 }
 
 server.listen(port, () => console.log(`Server running on port ${port}`));
